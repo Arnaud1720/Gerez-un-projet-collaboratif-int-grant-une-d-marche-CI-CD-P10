@@ -45,6 +45,6 @@ jobs:
         run: |
           cd back
           mvn -B clean verify org.sonarsource.scanner.maven:sonar-maven-plugin:3.11.0.3922:sonar \
-            -Dsonar.projectKey=Arnaud1720_Gerez-un-projet-collaboratif-int-grant-une-d-marche-CI-CD-P10 \
-            -Dsonar.organization=arnaud1720 \
-            -Dsonar.host.url=https://sonarcloud.io
+          -Dsonar.projectKey=Arnaud1720_Gerez-un-projet-collaboratif-int-grant-une-d-marche-CI-CD-P10 \
+          -Dsonar.organization=arnaud1720 \
+          -Dsonar.host.url=https://sonarcloud.io
