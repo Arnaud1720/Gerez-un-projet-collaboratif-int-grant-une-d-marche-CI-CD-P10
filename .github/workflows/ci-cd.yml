@@ -155,7 +155,7 @@ jobs:
           name: frontend-dist
           path: front/dist/
 
-  # Job 5: Docker Build & Push
+  # Job 5: Docker Build & Pushh
   docker:
     name: Build and Push Docker Images
     runs-on: ubuntu-latest
