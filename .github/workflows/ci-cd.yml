@@ -192,11 +192,15 @@ jobs:
         with:
           context: ./back
           push: true
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/bobapp-backend:latest,${{ secrets.DOCKERHUB_USERNAME }}/bobapp-backend:${{ github.sha }}
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/bobapp-backend:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/bobapp-backend:${{ github.sha }}
 
       - name: Build and push Frontend Docker image
         uses: docker/build-push-action@v5
         with:
           context: ./front
           push: true
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/bobapp-frontend:latest,${{ secrets.DOCKERHUB_USERNAME }}/bobapp-frontend:${{ github.sha }}
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/bobapp-frontend:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/bobapp-frontend:${{ github.sha }}
