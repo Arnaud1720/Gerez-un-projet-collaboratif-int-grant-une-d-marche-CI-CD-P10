@@ -54,7 +54,6 @@ jobs:
           node-version: '16'
           cache: 'npm'
           cache-dependency-path: front/package-lock.json
-
       - name: Install dependencies
         working-directory: ./front
         run: npm ci
