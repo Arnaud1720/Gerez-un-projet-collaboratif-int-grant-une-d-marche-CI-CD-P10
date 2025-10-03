@@ -192,7 +192,7 @@ jobs:
           context: ./back
           push: true
           tags: |
-            arnaudd3380
+            arnaudd3380/bobapp-backend:latest
             arnaudd3380/bobapp-backend:${{ github.sha }}
 
       - name: Build and push Frontend Docker image
