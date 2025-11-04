@@ -39,7 +39,7 @@ jobs:
           name: backend-coverage
           path: back/target/site/jacoco/
 
-  # Job 2: Tests Frontendd
+  # Job 2: Tests Frontend
   test-frontend:
     name: Test Frontend
     runs-on: ubuntu-latest
