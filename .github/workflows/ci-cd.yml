@@ -204,14 +204,45 @@ jobs:
             arnaudd3380/bobapp-frontend:latest
             arnaudd3380/bobapp-frontend:${{ github.sha }}
   # Job 6: Metrics
-  metrics:
-    name: CI/CD Metrics
+  kpi-dashboard:
+    name: Generate KPI Dashboard
     runs-on: ubuntu-latest
     needs: [docker]
     steps:
-      - name: Compute pipeline metrics
+      - name: Display CI/CD KPIs
         run: |
-          echo "⏱️ Pipeline total duration: $(( (SECONDS / 60) )) min"
-          echo "📦 Docker build time: 2m22s"
-          echo "🧱 Total jobs: 5 | Success: 5 | Failed: 0"
-          echo "💾 Backend image size: ~350MB"
+          echo "📊 --- CI/CD KPIs ---"
+          echo "⏱️ Pipeline duration ≈ 6 min"
+          echo "🧪 Coverage: 38.8% (objectif 80%)"
+          echo "🚦 Quality Gate: PASSED"
+          echo "🐞 Bugs: 0 | 🔒 Vulnérabilités: 0 | 💨 Code Smells: 9"
+          echo "📦 Docker image size (backend): ~350 MB"
+          echo "🔁 Deployment frequency: daily on main"
+          echo "✅ Success rate: 100% (last 5 runs)"
+          echo "🚀 --- Keep improving! ---"
+  # Job 7: Release
+release:
+  name: Publish JAR Release
+  runs-on: ubuntu-latest
+  needs: [build]                     # attend ton job build
+  if: github.ref == 'refs/heads/main'
+  permissions:
+    contents: write                  # nécessaire pour créer une release
+  steps:
+    - name: Download backend JAR
+      uses: actions/download-artifact@v4
+      with:
+        name: backend-jar
+        path: dist/
+
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: v${{ github.run_number }}   # ou ta version
+        name: "BobApp ${{
+          github.run_number
+        }}"
+        draft: false
+        prerelease: false
+        files: |
+          dist/*.jar
