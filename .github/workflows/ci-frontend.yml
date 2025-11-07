@@ -1,0 +1,80 @@
+name: CI Frontend Tests
+
+on:
+  # Tests déclenchés automatiquement toutes les heures
+  schedule:
+    - cron: '0 * * * *'  # Toutes les heures
+  # Tests sur push/PR vers la branche test-frontend
+  push:
+    branches: [ test-frontend ]
+  pull_request:
+    branches: [ test-frontend ]
+  # Permet de déclencher manuellement
+  workflow_dispatch:
+
+jobs:
+  test-frontend:
+    name: Frontend Tests & Coverage
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: front/package-lock.json
+
+      - name: Install dependencies
+        working-directory: ./front
+        run: npm ci
+
+      - name: Run Frontend Tests with Coverage
+        working-directory: ./front
+        run: npm run test -- --watch=false --code-coverage --browsers=ChromeHeadless
+
+      - name: Extract Coverage Percentage
+        id: coverage
+        working-directory: ./front
+        run: |
+          # Extraction du taux de couverture depuis le rapport de coverage
+          if [ -f "coverage/index.html" ]; then
+            COVERAGE=$(grep -oP '\d+\.\d+(?=%)' coverage/index.html | head -1 | cut -d. -f1 || echo "0")
+          elif [ -f "coverage/lcov-report/index.html" ]; then
+            COVERAGE=$(grep -oP '\d+\.\d+(?=%)' coverage/lcov-report/index.html | head -1 | cut -d. -f1 || echo "0")
+          else
+            COVERAGE="0"
+          fi
+          echo "coverage=$COVERAGE" >> $GITHUB_OUTPUT
+          echo "Frontend Coverage: $COVERAGE%"
+
+      - name: Upload Frontend Coverage Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-coverage-${{ github.run_number }}
+          path: front/coverage/
+
+      - name: Comment Coverage on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const coverage = '${{ steps.coverage.outputs.coverage }}';
+            const threshold = 80;
+            const status = coverage >= threshold ? '✅' : '❌';
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## ${status} Frontend Coverage Report\n\n**Coverage:** ${coverage}%\n**Threshold:** ${threshold}%\n\n${coverage >= threshold ? 'Coverage requirement met!' : 'Coverage below required threshold!'}`
+            })
+
+      - name: Display Test Summary
+        run: |
+          echo " Frontend Tests Complete"
+          echo " Coverage: ${{ steps.coverage.outputs.coverage }}%"
+          echo " Target: 80%"
