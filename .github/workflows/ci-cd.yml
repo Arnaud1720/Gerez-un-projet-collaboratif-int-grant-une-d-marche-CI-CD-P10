@@ -48,14 +48,15 @@ jobs:
           echo "coverage=$COVERAGE" >> $GITHUB_OUTPUT
           echo "📊 Backend Coverage: $COVERAGE%"
 
-          # TEMPORAIREMENT DESACTIVE POUR TESTS
-          # if [ "$COVERAGE" -lt 80 ]; then
-          #   echo "❌ DEPLOYMENT BLOCKED: Backend coverage ($COVERAGE%) < 80%"
-          #   exit 1
-          # else
-          #   echo "✅ Backend coverage requirement met"
-          # fi
-          echo "⚠️ Coverage check temporarily disabled for testing"
+          # VERIFICATION STRICTE DU COVERAGE POUR LA BRANCHE MAIN
+          # Cette vérification bloque le déploiement si le coverage backend < 80%
+          if [ "$COVERAGE" -lt 80 ]; then
+            echo "❌ DEPLOYMENT BLOCKED: Backend coverage ($COVERAGE%) < 80%"
+            echo "⛔ Cannot merge to main branch with insufficient code coverage"
+            exit 1
+          else
+            echo "✅ Backend coverage requirement met ($COVERAGE% >= 80%)"
+          fi
 
       - name: Install Frontend dependencies
         working-directory: ./front
@@ -79,14 +80,15 @@ jobs:
           echo "coverage=$COVERAGE" >> $GITHUB_OUTPUT
           echo "📊 Frontend Coverage: $COVERAGE%"
 
-          # TEMPORAIREMENT DESACTIVE POUR TESTS
-          # if [ "$COVERAGE" -lt 80 ]; then
-          #   echo "❌ DEPLOYMENT BLOCKED: Frontend coverage ($COVERAGE%) < 80%"
-          #   exit 1
-          # else
-          #   echo "✅ Frontend coverage requirement met"
-          # fi
-          echo "⚠️ Coverage check temporarily disabled for testing"
+          # VERIFICATION STRICTE DU COVERAGE POUR LA BRANCHE MAIN
+          # Cette vérification bloque le déploiement si le coverage frontend < 80%
+          if [ "$COVERAGE" -lt 80 ]; then
+            echo "❌ DEPLOYMENT BLOCKED: Frontend coverage ($COVERAGE%) < 80%"
+            echo "⛔ Cannot merge to main branch with insufficient code coverage"
+            exit 1
+          else
+            echo "✅ Frontend coverage requirement met ($COVERAGE% >= 80%)"
+          fi
 
       - name: Upload Backend Coverage Report
         uses: actions/upload-artifact@v4
@@ -185,35 +187,36 @@ jobs:
         with:
           name: frontend-dist
           path: front/dist/
-  release:
-    name: Publish JAR Release
-    runs-on: ubuntu-latest
-    needs: [build]                   # attend que build soit terminé
-    if: github.ref == 'refs/heads/main'  # seulement sur la branche main
-    permissions:
-      contents: write                # autorise la création de release
+  # TEMPORAIREMENT DESACTIVE POUR TESTS
+  # release:
+  #   name: Publish JAR Release
+  #   runs-on: ubuntu-latest
+  #   needs: [build]                   # attend que build soit terminé
+  #   if: github.ref == 'refs/heads/main'  # seulement sur la branche main
+  #   permissions:
+  #     contents: write                # autorise la création de release
 
-    steps:
-      - name: Download Backend JAR
-        uses: actions/download-artifact@v4
-        with:
-          name: backend-jar
-          path: dist/
+  #   steps:
+  #     - name: Download Backend JAR
+  #       uses: actions/download-artifact@v4
+  #       with:
+  #         name: backend-jar
+  #         path: dist/
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: v${{ github.run_number }}         # crée un tag automatique
-          name: "BobApp Release ${{ github.run_number }}"
-          body: |
-            🚀 Nouvelle version BobApp générée automatiquement.
-            - Tests backend et frontend passés ✅
-            - Analyse SonarCloud : PASSED 🟢
-            - Build CI/CD complet 🧱
-          draft: false
-          prerelease: false
-          files: |
-            dist/*.jar
+  #     - name: Create GitHub Release
+  #       uses: softprops/action-gh-release@v2
+  #       with:
+  #         tag_name: v${{ github.run_number }}         # crée un tag automatique
+  #         name: "BobApp Release ${{ github.run_number }}"
+  #         body: |
+  #           🚀 Nouvelle version BobApp générée automatiquement.
+  #           - Tests backend et frontend passés ✅
+  #           - Analyse SonarCloud : PASSED 🟢
+  #           - Build CI/CD complet 🧱
+  #         draft: false
+  #         prerelease: false
+  #         files: |
+  #           dist/*.jar
 
   # Job 5: Docker Build & Push
   docker:
