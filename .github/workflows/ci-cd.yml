@@ -1,4 +1,4 @@
-name: Main - Coverage & Build
+name: Main - Coverage, Build & Push to Docker Hub
 
 on:
   push:
@@ -7,6 +7,9 @@ on:
 env:
   NODE_VERSION: 20
   JAVA_VERSION: '17'
+  # Nom des images Docker (modifiez à votre guise)
+  IMAGE_BACK: app-back
+  IMAGE_FRONT: app-front
 
 jobs:
   backend-coverage:
@@ -66,7 +69,7 @@ jobs:
             front/coverage/**/index.html
             front/coverage/**
 
-      # (Optionnel) extraire le % pour logs — pas de blocage, juste informatif
+      # (info log seulement)
       - name: Log coverage %
         working-directory: ./front
         shell: bash
@@ -76,13 +79,7 @@ jobs:
           if [[ -n "${JSON_REPORT}" ]]; then
             PCT=$(node -e "console.log(Math.floor(require(process.argv[1]).total.lines.pct))" "$JSON_REPORT")
           else
-            LCOV=$(find coverage -type f -name "lcov.info" -print -quit || true)
-            if [[ -n "${LCOV}" ]]; then
-              # % = sum(LH)/sum(LF)*100 (LH: lines hit, LF: lines found)
-              PCT=$(awk 'BEGIN{lh=0;lf=0} /^LH:/{sub(\"LH:\",\"\",$1);lh+=$1} /^LF:/{sub(\"LF:\",\"\",$1);lf+=$1} END{if(lf>0) printf(\"%d\", (lh*100)/lf); else print 0}' "$LCOV")
-            else
-              PCT=0
-            fi
+            PCT=0
           fi
           echo "📊 Frontend coverage: ${PCT}%"
 
@@ -132,3 +129,69 @@ jobs:
         with:
           name: frontend-build
           path: front/dist/**
+
+  docker-publish:
+    name: Docker • Build & Push to Docker Hub
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set image names
+        id: img
+        shell: bash
+        run: |
+          # Repo Docker Hub = <username>/<image>
+          echo "BACK_IMAGE=${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_BACK }}" >> $GITHUB_OUTPUT
+          echo "FRONT_IMAGE=${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_FRONT }}" >> $GITHUB_OUTPUT
+          # Tags: latest + sha court
+          SHORT_SHA=$(echo "${GITHUB_SHA}" | cut -c1-7)
+          echo "TAG1=latest" >> $GITHUB_OUTPUT
+          echo "TAG2=${SHORT_SHA}" >> $GITHUB_OUTPUT
+
+      - name: Set up QEMU (optional for multi-arch)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # Backend image
+      - name: Build & Push Backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./back
+          file: ./back/Dockerfile
+          push: true
+          # pour multi-arch, décommentez:
+          # platforms: linux/amd64,linux/arm64
+          tags: |
+            ${{ steps.img.outputs.BACK_IMAGE }}:${{ steps.img.outputs.TAG1 }}
+            ${{ steps.img.outputs.BACK_IMAGE }}:${{ steps.img.outputs.TAG2 }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          labels: |
+            org.opencontainers.image.source=${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+
+      # Frontend image
+      - name: Build & Push Frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./front
+          file: ./front/Dockerfile
+          push: true
+          # platforms: linux/amd64,linux/arm64
+          tags: |
+            ${{ steps.img.outputs.FRONT_IMAGE }}:${{ steps.img.outputs.TAG1 }}
+            ${{ steps.img.outputs.FRONT_IMAGE }}:${{ steps.img.outputs.TAG2 }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          labels: |
+            org.opencontainers.image.source=${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
