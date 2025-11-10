@@ -1,0 +1,155 @@
+name: Reusable CI - Backend Tests
+
+on:
+  workflow_call:
+    inputs:
+      java_version:
+        description: 'Java version'
+        type: string
+        default: "17"
+      threshold:
+        description: 'Coverage threshold percentage'
+        type: number
+        default: 80
+      working_directory:
+        description: 'Backend working directory'
+        type: string
+        default: "./back"
+    outputs:
+      coverage:
+        description: "Backend line coverage percentage"
+        value: ${{ jobs.test.outputs.coverage }}
+      ok:
+        description: "true if coverage >= threshold"
+        value: ${{ jobs.test.outputs.ok }}
+      report_url:
+        description: "URL to coverage report artifact"
+        value: ${{ jobs.test.outputs.report_url }}
+
+jobs:
+  test:
+    name: Backend Tests
+    runs-on: ubuntu-latest
+    outputs:
+      coverage: ${{ steps.results.outputs.coverage }}
+      ok: ${{ steps.results.outputs.ok }}
+      report_url: ${{ steps.upload.outputs.artifact-url }}
+    
+    steps:
+      - name: 📥 Checkout Code
+        uses: actions/checkout@v4
+
+      - name: ☕ Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: ${{ inputs.java_version }}
+          cache: 'maven'
+
+      - name: 🧪 Run Tests with JaCoCo
+        working-directory: ${{ inputs.working_directory }}
+        run: |
+          echo "Running tests with JaCoCo coverage..."
+          mvn -B clean test jacoco:report
+
+      - name: 📊 Calculate Coverage
+        id: coverage
+        working-directory: ${{ inputs.working_directory }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          
+          JACOCO_XML="target/site/jacoco/jacoco.xml"
+          
+          if [[ ! -f "$JACOCO_XML" ]]; then
+            echo "⚠️ JaCoCo XML report not found at $JACOCO_XML"
+            echo "pct=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          
+          # Extract line coverage from JaCoCo XML report
+          MISSED=$(grep -oP 'counter type="LINE" missed="\K[0-9]+' "$JACOCO_XML" | paste -sd+ - | bc)
+          COVERED=$(grep -oP 'counter type="LINE" missed="\d+" covered="\K[0-9]+' "$JACOCO_XML" | paste -sd+ - | bc)
+          
+          : "${MISSED:=0}"
+          : "${COVERED:=0}"
+          
+          TOTAL=$((MISSED + COVERED))
+          
+          if [[ "$TOTAL" -eq 0 ]]; then
+            PCT=0
+          else
+            PCT=$((COVERED * 100 / TOTAL))
+          fi
+          
+          echo "pct=${PCT}" >> "$GITHUB_OUTPUT"
+          echo "📊 Backend Coverage: ${PCT}%"
+          echo "   Lines covered: ${COVERED}"
+          echo "   Lines missed: ${MISSED}"
+          echo "   Total lines: ${TOTAL}"
+
+      - name: 🎯 Check Coverage Threshold
+        id: results
+        shell: bash
+        run: |
+          THRESHOLD=${{ inputs.threshold }}
+          COVERAGE=${{ steps.coverage.outputs.pct }}
+          
+          if [ "$COVERAGE" -ge "$THRESHOLD" ]; then
+            echo "✅ Coverage ${COVERAGE}% meets threshold of ${THRESHOLD}%"
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "❌ Coverage ${COVERAGE}% is below threshold of ${THRESHOLD}%"
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+          
+          echo "coverage=${COVERAGE}" >> "$GITHUB_OUTPUT"
+
+      - name: 📤 Upload JaCoCo Report
+        id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-coverage-${{ github.run_id }}
+          path: |
+            ${{ inputs.working_directory }}/target/site/jacoco/**
+            ${{ inputs.working_directory }}/target/surefire-reports/**
+          retention-days: 30
+
+      - name: 📈 Generate Coverage Badge (Optional)
+        if: success() && github.ref == 'refs/heads/main'
+        shell: bash
+        run: |
+          COVERAGE=${{ steps.coverage.outputs.pct }}
+          COLOR="red"
+          if [ "$COVERAGE" -ge 80 ]; then COLOR="green"
+          elif [ "$COVERAGE" -ge 60 ]; then COLOR="yellow"
+          elif [ "$COVERAGE" -ge 40 ]; then COLOR="orange"
+          fi
+          echo "Badge color: $COLOR for coverage: $COVERAGE%"
+          # You can integrate with shields.io or other badge services here
+
+      - name: 💬 Comment PR (if applicable)
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        continue-on-error: true
+        with:
+          script: |
+            const coverage = ${{ steps.coverage.outputs.pct }};
+            const threshold = ${{ inputs.threshold }};
+            const passed = ${{ steps.results.outputs.ok }};
+            const emoji = passed ? '✅' : '❌';
+            
+            const body = `## ${emoji} Backend Coverage Report
+            
+            - **Coverage**: ${coverage}%
+            - **Threshold**: ${threshold}%
+            - **Status**: ${passed ? 'PASSED' : 'FAILED'}
+            
+            ${!passed ? '> ⚠️ Please improve test coverage to meet the minimum threshold.' : ''}`;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });

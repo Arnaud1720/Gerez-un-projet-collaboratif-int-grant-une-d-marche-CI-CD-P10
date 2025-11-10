@@ -1,0 +1,152 @@
+name: Reusable CI - Frontend Tests
+
+on:
+  workflow_call:
+    inputs:
+      node_version:
+        description: 'Node.js version'
+        type: string
+        default: "20"
+      threshold:
+        description: 'Coverage threshold percentage'
+        type: number
+        default: 80
+      working_directory:
+        description: 'Frontend working directory'
+        type: string
+        default: "./front"
+    outputs:
+      coverage:
+        description: "Frontend line coverage percentage"
+        value: ${{ jobs.test.outputs.coverage }}
+      ok:
+        description: "true if coverage >= threshold"
+        value: ${{ jobs.test.outputs.ok }}
+      report_url:
+        description: "URL to coverage report artifact"
+        value: ${{ jobs.test.outputs.report_url }}
+
+jobs:
+  test:
+    name: Frontend Tests
+    runs-on: ubuntu-latest
+    outputs:
+      coverage: ${{ steps.results.outputs.coverage }}
+      ok: ${{ steps.results.outputs.ok }}
+      report_url: ${{ steps.upload.outputs.artifact-url }}
+    
+    steps:
+      - name: 📥 Checkout Code
+        uses: actions/checkout@v4
+
+      - name: 🔧 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: 'npm'
+          cache-dependency-path: ${{ inputs.working_directory }}/package-lock.json
+
+      - name: 📦 Install Dependencies
+        working-directory: ${{ inputs.working_directory }}
+        run: |
+          echo "Installing dependencies..."
+          npm ci --prefer-offline --no-audit
+
+      - name: 🧪 Run Tests with Coverage
+        working-directory: ${{ inputs.working_directory }}
+        run: |
+          echo "Running tests with coverage..."
+          npm run test -- --watch=false --browsers=ChromeHeadless --code-coverage
+
+      - name: 📊 Calculate Coverage
+        id: coverage
+        working-directory: ${{ inputs.working_directory }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          
+          # Try to find coverage-summary.json first
+          JSON_REPORT=$(find coverage -type f -name "coverage-summary.json" -print -quit 2>/dev/null || true)
+          
+          if [[ -n "${JSON_REPORT}" && -f "${JSON_REPORT}" ]]; then
+            # Extract percentage from JSON report
+            PCT=$(node -e "
+              const report = require('./${JSON_REPORT}');
+              console.log(Math.floor(report.total.lines.pct));
+            " 2>/dev/null || echo "0")
+          else
+            # Fallback to lcov.info
+            LCOV=$(find coverage -type f -name "lcov.info" -print -quit 2>/dev/null || true)
+            if [[ -n "${LCOV}" && -f "${LCOV}" ]]; then
+              # Parse lcov.info for coverage percentage
+              PCT=$(awk '
+                BEGIN { lh=0; lf=0 }
+                /^LH:/ { sub("LH:","",$1); lh+=$1 }
+                /^LF:/ { sub("LF:","",$1); lf+=$1 }
+                END { 
+                  if(lf>0) printf("%d", (lh*100)/lf); 
+                  else print 0 
+                }
+              ' "$LCOV")
+            else
+              echo "⚠️ No coverage report found, defaulting to 0%"
+              PCT=0
+            fi
+          fi
+          
+          echo "pct=${PCT}" >> "$GITHUB_OUTPUT"
+          echo "📊 Frontend Coverage: ${PCT}%"
+
+      - name: 🎯 Check Coverage Threshold
+        id: results
+        shell: bash
+        run: |
+          THRESHOLD=${{ inputs.threshold }}
+          COVERAGE=${{ steps.coverage.outputs.pct }}
+          
+          if [ "$COVERAGE" -ge "$THRESHOLD" ]; then
+            echo "✅ Coverage ${COVERAGE}% meets threshold of ${THRESHOLD}%"
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "❌ Coverage ${COVERAGE}% is below threshold of ${THRESHOLD}%"
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+          
+          echo "coverage=${COVERAGE}" >> "$GITHUB_OUTPUT"
+
+      - name: 📤 Upload Coverage Report
+        id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-coverage-${{ github.run_id }}
+          path: |
+            ${{ inputs.working_directory }}/coverage/**/*.html
+            ${{ inputs.working_directory }}/coverage/**/*.json
+            ${{ inputs.working_directory }}/coverage/**/lcov.info
+          retention-days: 30
+
+      - name: 💬 Comment PR (if applicable)
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        continue-on-error: true
+        with:
+          script: |
+            const coverage = ${{ steps.coverage.outputs.pct }};
+            const threshold = ${{ inputs.threshold }};
+            const passed = ${{ steps.results.outputs.ok }};
+            const emoji = passed ? '✅' : '❌';
+            
+            const body = `## ${emoji} Frontend Coverage Report
+            
+            - **Coverage**: ${coverage}%
+            - **Threshold**: ${threshold}%
+            - **Status**: ${passed ? 'PASSED' : 'FAILED'}
+            
+            ${!passed ? '> ⚠️ Please improve test coverage to meet the minimum threshold.' : ''}`;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });

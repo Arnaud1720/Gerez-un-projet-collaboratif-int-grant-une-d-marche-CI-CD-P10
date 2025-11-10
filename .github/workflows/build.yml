@@ -1,29 +1,96 @@
-name: SonarCloud
+name: Code Quality - SonarCloud Analysis
 
 on:
   push:
-    branches: [ main, test-frontend, test-backend ]
+    branches: [ main, develop ]
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [ opened, synchronize, reopened ]
+  workflow_dispatch:
 
 jobs:
-  sonar:
+  sonarcloud:
+    name: SonarCloud Analysis
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-        with: { fetch-depth: 0 }     # historique nécessaire à Sonar
-      - uses: actions/setup-java@v4
+      - name: 📥 Checkout Code
+        uses: actions/checkout@v4
         with:
-          distribution: temurin
+          fetch-depth: 0  # Nécessaire pour l'analyse complète de l'historique
+
+      - name: ☕ Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
           java-version: '17'
-          cache: maven
-      - name: Build + Sonar (Maven)
+          cache: 'maven'
+
+      - name: 🔍 Cache SonarCloud packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.sonar/cache
+          key: ${{ runner.os }}-sonar
+          restore-keys: ${{ runner.os }}-sonar
+
+      - name: 🔍 Cache Maven packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2
+          key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
+          restore-keys: ${{ runner.os }}-m2
+
+      - name: 🧪 Build and Analyze Backend
+        working-directory: ./back
         env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         run: |
           mvn -B clean verify \
             org.sonarsource.scanner.maven:sonar-maven-plugin:sonar \
-            -DskipTests \
-            -Dsonar.projectKey=<TON_PROJECT_KEY> \
-            -Dsonar.organization=<TON_ORG> \
-            -Dsonar.host.url=https://sonarcloud.io
+            -Dsonar.projectKey=${{ secrets.SONAR_PROJECT_KEY_BACKEND }} \
+            -Dsonar.organization=${{ secrets.SONAR_ORGANIZATION }} \
+            -Dsonar.host.url=https://sonarcloud.io \
+            -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml
+
+      - name: 📦 Setup Node.js for Frontend
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: front/package-lock.json
+
+      - name: 📦 Install Frontend Dependencies
+        working-directory: ./front
+        run: npm ci
+
+      - name: 🧪 Test Frontend with Coverage
+        working-directory: ./front
+        run: npm run test -- --watch=false --browsers=ChromeHeadless --code-coverage
+
+      - name: 🔍 SonarCloud Scan Frontend
+        uses: SonarSource/sonarcloud-github-action@master
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          projectBaseDir: front
+          args: >
+            -Dsonar.projectKey=${{ secrets.SONAR_PROJECT_KEY_FRONTEND }}
+            -Dsonar.organization=${{ secrets.SONAR_ORGANIZATION }}
+            -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
+            -Dsonar.sources=src
+            -Dsonar.tests=src
+            -Dsonar.test.inclusions=**/*.spec.ts,**/*.test.ts
+
+      - name: 📊 Quality Gate Status
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## 🔍 SonarCloud Analysis Complete
+            
+              View the full analysis results on [SonarCloud](https://sonarcloud.io/organizations/${{ secrets.SONAR_ORGANIZATION }}/projects)`
+            });
