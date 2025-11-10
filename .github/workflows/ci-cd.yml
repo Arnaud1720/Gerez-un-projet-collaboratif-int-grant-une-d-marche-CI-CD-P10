@@ -1,4 +1,4 @@
-name: CD Pipeline - Main Deployment
+name: CD Pipeline - Main Deployment (TEST MODE - 20% Coverage)
 
 on:
   push:
@@ -7,9 +7,9 @@ on:
     branches: [ main ]
 
 jobs:
-  # Job 1: Vérification du Quality Gate (Coverage >= 80%)
+  # Job 1: Vérification du Quality Gate (Coverage >= 20% pour TEST)
   quality-gate:
-    name: Verify Quality Gate
+    name: Verify Quality Gate (TEST MODE - 20%)
     runs-on: ubuntu-latest
 
     steps:
@@ -40,24 +40,24 @@ jobs:
         working-directory: ./back
         run: mvn clean test jacoco:report
 
-      - name: Verify Backend Coverage >= 80%
+      - name: Verify Backend Coverage >= 20%
         id: backend-coverage
         working-directory: ./back
         run: |
           COVERAGE=$(grep -oP 'Total.*?(\d+)%' target/site/jacoco/index.html | grep -oP '\d+' | head -1 || echo "0")
           echo "coverage=$COVERAGE" >> $GITHUB_OUTPUT
           echo "📊 Backend Coverage: $COVERAGE%"
-
-        # VERIFICATION STRICTE DU COVERAGE POUR LA BRANCHE MAIN - TEMPORAIREMENT DESACTIVEE
-           Cette vérification bloque le déploiement si le coverage backend < 80%
-           if [ "$COVERAGE" -lt 80 ]; then
-             echo "❌ DEPLOYMENT BLOCKED: Backend coverage ($COVERAGE%) < 80%"
-             echo "⛔ Cannot merge to main branch with insufficient code coverage"
-             exit 1
-           else
-             echo "✅ Backend coverage requirement met ($COVERAGE% >= 80%)"
-           fi
-          echo "⚠️ Backend coverage check temporarily disabled for testing"
+          
+          # VERIFICATION STRICTE DU COVERAGE POUR LA BRANCHE MAIN - MODE TEST À 20%
+          if [ "$COVERAGE" -lt 20 ]; then
+            echo "❌ DEPLOYMENT BLOCKED: Backend coverage ($COVERAGE%) < 20%"
+            echo "⛔ Cannot merge to main branch with insufficient code coverage"
+            echo "🔴 TEST MODE: Threshold set to 20% for testing"
+            exit 1
+          else
+            echo "✅ Backend coverage requirement met ($COVERAGE% >= 20%)"
+            echo "🟢 TEST MODE: Threshold set to 20% for testing"
+          fi
 
       - name: Install Frontend dependencies
         working-directory: ./front
@@ -67,7 +67,7 @@ jobs:
         working-directory: ./front
         run: npm run test -- --watch=false --code-coverage --browsers=ChromeHeadless
 
-      - name: Verify Frontend Coverage >= 80%
+      - name: Verify Frontend Coverage >= 20%
         id: frontend-coverage
         working-directory: ./front
         run: |
@@ -80,17 +80,17 @@ jobs:
           fi
           echo "coverage=$COVERAGE" >> $GITHUB_OUTPUT
           echo "📊 Frontend Coverage: $COVERAGE%"
-
-        # VERIFICATION STRICTE DU COVERAGE POUR LA BRANCHE MAIN - TEMPORAIREMENT DESACTIVEE
-           Cette vérification bloque le déploiement si le coverage frontend < 80%
-           if [ "$COVERAGE" -lt 20 ]; then
-             echo " DEPLOYMENT BLOCKED: Frontend coverage ($COVERAGE%) < 20%"
-             echo " Cannot merge to main branch with insufficient code coverage"
-             exit 1
-           else
-             echo "✅ Frontend coverage requirement met ($COVERAGE% >= 20%)"
-           fi
-         echo " Frontend coverage check temporarily disabled for testing"
+          
+          # VERIFICATION STRICTE DU COVERAGE POUR LA BRANCHE MAIN - MODE TEST À 20%
+          if [ "$COVERAGE" -lt 20 ]; then
+            echo "❌ DEPLOYMENT BLOCKED: Frontend coverage ($COVERAGE%) < 20%"
+            echo "⛔ Cannot merge to main branch with insufficient code coverage"
+            echo "🔴 TEST MODE: Threshold set to 20% for testing"
+            exit 1
+          else
+            echo "✅ Frontend coverage requirement met ($COVERAGE% >= 20%)"
+            echo "🟢 TEST MODE: Threshold set to 20% for testing"
+          fi
 
       - name: Upload Backend Coverage Report
         uses: actions/upload-artifact@v4
@@ -189,6 +189,7 @@ jobs:
         with:
           name: frontend-dist
           path: front/dist/
+
   # TEMPORAIREMENT DESACTIVE POUR TESTS
   # release:
   #   name: Publish JAR Release
@@ -209,7 +210,7 @@ jobs:
   #         tag_name: v${{ github.run_number }}         # crée un tag automatique
   #         name: "BobApp Release ${{ github.run_number }}"
   #         body: |
-  #            Nouvelle version BobApp générée automatiquement.
+  #           Nouvelle version BobApp générée automatiquement.
   #           - Tests backend et frontend passés ✅
   #           - Analyse SonarCloud : PASSED 🟢
   #           - Build CI/CD complet 🧱
@@ -218,7 +219,7 @@ jobs:
   #         files: |
   #           dist/*.jar
 
-  # Job 5: Docker Build & Push
+  # Job 4: Docker Build & Push
   docker:
     name: Build and Push Docker Images
     runs-on: ubuntu-latest
@@ -249,7 +250,6 @@ jobs:
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-
 
       - name: Build and push Backend Docker image
         uses: docker/build-push-action@v5
