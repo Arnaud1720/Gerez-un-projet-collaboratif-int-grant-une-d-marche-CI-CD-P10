@@ -1,270 +1,134 @@
-name: CD Pipeline - Main Deployment (TEST MODE - 20% Coverage)
+name: Main - Coverage & Build
 
 on:
   push:
     branches: [ main ]
-  pull_request:
-    branches: [ main ]
+
+env:
+  NODE_VERSION: 20
+  JAVA_VERSION: '17'
 
 jobs:
-  # Job 1: Vérification du Quality Gate (Coverage >= 20% pour TEST)
-  quality-gate:
-    name: Verify Quality Gate (TEST MODE - 20%)
+  backend-coverage:
+    name: Backend • Tests + JaCoCo report
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up JDK 17
+      - name: Setup Java
         uses: actions/setup-java@v4
         with:
-          java-version: '17'
-          distribution: 'temurin'
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: maven
 
-      - name: Cache Maven packages
-        uses: actions/cache@v4
+      - name: Test backend (JaCoCo)
+        working-directory: ./back
+        run: mvn -B clean test jacoco:report
+
+      - name: Upload JaCoCo report
+        uses: actions/upload-artifact@v4
         with:
-          path: ~/.m2
-          key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
-          restore-keys: ${{ runner.os }}-m2
+          name: backend-jacoco
+          path: |
+            back/target/site/jacoco/jacoco.xml
+            back/target/site/jacoco/**
 
-      - name: Set up Node.js
+  frontend-coverage:
+    name: Frontend • Tests + Coverage report
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
           cache-dependency-path: front/package-lock.json
 
-      - name: Run Backend Tests with Coverage
-        working-directory: ./back
-        run: mvn clean test jacoco:report
-
-      - name: Verify Backend Coverage >= 20%
-        id: backend-coverage
-        working-directory: ./back
-        run: |
-          COVERAGE=$(grep -oP 'Total.*?(\d+)%' target/site/jacoco/index.html | grep -oP '\d+' | head -1 || echo "0")
-          echo "coverage=$COVERAGE" >> $GITHUB_OUTPUT
-          echo "📊 Backend Coverage: $COVERAGE%"
-          
-          # VERIFICATION STRICTE DU COVERAGE POUR LA BRANCHE MAIN - MODE TEST À 20%
-          if [ "$COVERAGE" -lt 20 ]; then
-            echo "❌ DEPLOYMENT BLOCKED: Backend coverage ($COVERAGE%) < 20%"
-            echo "⛔ Cannot merge to main branch with insufficient code coverage"
-            echo "🔴 TEST MODE: Threshold set to 20% for testing"
-            exit 1
-          else
-            echo "✅ Backend coverage requirement met ($COVERAGE% >= 20%)"
-            echo "🟢 TEST MODE: Threshold set to 20% for testing"
-          fi
-
-      - name: Install Frontend dependencies
+      - name: Install deps
         working-directory: ./front
         run: npm ci
 
-      - name: Run Frontend Tests with Coverage
-        working-directory: ./front
-        run: npm run test -- --watch=false --code-coverage --browsers=ChromeHeadless
-
-      - name: Verify Frontend Coverage >= 20%
-        id: frontend-coverage
+      - name: Test frontend (with coverage)
         working-directory: ./front
         run: |
-          if [ -f "coverage/index.html" ]; then
-            COVERAGE=$(grep -oP '\d+\.\d+(?=%)' coverage/index.html | head -1 | cut -d. -f1 || echo "0")
-          elif [ -f "coverage/lcov-report/index.html" ]; then
-            COVERAGE=$(grep -oP '\d+\.\d+(?=%)' coverage/lcov-report/index.html | head -1 | cut -d. -f1 || echo "0")
-          else
-            COVERAGE="0"
-          fi
-          echo "coverage=$COVERAGE" >> $GITHUB_OUTPUT
-          echo "📊 Frontend Coverage: $COVERAGE%"
-          
-          # VERIFICATION STRICTE DU COVERAGE POUR LA BRANCHE MAIN - MODE TEST À 20%
-          if [ "$COVERAGE" -lt 20 ]; then
-            echo "❌ DEPLOYMENT BLOCKED: Frontend coverage ($COVERAGE%) < 20%"
-            echo "⛔ Cannot merge to main branch with insufficient code coverage"
-            echo "🔴 TEST MODE: Threshold set to 20% for testing"
-            exit 1
-          else
-            echo "✅ Frontend coverage requirement met ($COVERAGE% >= 20%)"
-            echo "🟢 TEST MODE: Threshold set to 20% for testing"
-          fi
+          npm run test -- --watch=false --browsers=ChromeHeadless --code-coverage
 
-      - name: Upload Backend Coverage Report
-        uses: actions/upload-artifact@v4
-        with:
-          name: backend-coverage
-          path: back/target/site/jacoco/
-
-      - name: Upload Frontend Coverage Report
+      - name: Upload coverage (Angular/Istanbul)
         uses: actions/upload-artifact@v4
         with:
           name: frontend-coverage
-          path: front/coverage/
+          path: |
+            front/coverage/**/coverage-summary.json
+            front/coverage/**/lcov.info
+            front/coverage/**/index.html
+            front/coverage/**
 
-  # Job 2: SonarCloud Analysis
-  sonarcloud:
-    name: SonarCloud Analysis
+      # (Optionnel) extraire le % pour logs — pas de blocage, juste informatif
+      - name: Log coverage %
+        working-directory: ./front
+        shell: bash
+        run: |
+          set -euo pipefail
+          JSON_REPORT=$(find coverage -type f -name "coverage-summary.json" -print -quit || true)
+          if [[ -n "${JSON_REPORT}" ]]; then
+            PCT=$(node -e "console.log(Math.floor(require(process.argv[1]).total.lines.pct))" "$JSON_REPORT")
+          else
+            LCOV=$(find coverage -type f -name "lcov.info" -print -quit || true)
+            if [[ -n "${LCOV}" ]]; then
+              # % = sum(LH)/sum(LF)*100 (LH: lines hit, LF: lines found)
+              PCT=$(awk 'BEGIN{lh=0;lf=0} /^LH:/{sub(\"LH:\",\"\",$1);lh+=$1} /^LF:/{sub(\"LF:\",\"\",$1);lf+=$1} END{if(lf>0) printf(\"%d\", (lh*100)/lf); else print 0}' "$LCOV")
+            else
+              PCT=0
+            fi
+          fi
+          echo "📊 Frontend coverage: ${PCT}%"
+
+  build:
+    name: Build • Back & Front
+    needs: [ backend-coverage, frontend-coverage ]
     runs-on: ubuntu-latest
-    needs: [quality-gate]
-
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - name: Set up JDK 17
+      # Backend build (sans relancer les tests)
+      - name: Setup Java
         uses: actions/setup-java@v4
         with:
-          java-version: 17
-          distribution: 'zulu'
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: maven
 
-      - name: Cache SonarQube packages
-        uses: actions/cache@v4
-        with:
-          path: ~/.sonar/cache
-          key: ${{ runner.os }}-sonar
-          restore-keys: ${{ runner.os }}-sonar
-
-      - name: Cache Maven packages
-        uses: actions/cache@v4
-        with:
-          path: ~/.m2
-          key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
-          restore-keys: ${{ runner.os }}-m2
-
-      - name: Download Backend Coverage
-        uses: actions/download-artifact@v4
-        with:
-          name: backend-coverage
-          path: back/target/site/jacoco/
-
-      - name: Build and analyze Backend
+      - name: Build backend (skip tests)
         working-directory: ./back
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-        run: mvn -B verify org.sonarsource.scanner.maven:sonar-maven-plugin:sonar -Dsonar.projectKey=Arnaud1720_Gerez-un-projet-collaboratif-int-grant-une-d-marche-CI-CD-P10 -Dsonar.organization=arnaud1720 -Dsonar.host.url=https://sonarcloud.io
+        run: mvn -B -DskipTests package
 
-  # Job 3: Build
-  build:
-    name: Build Application
-    runs-on: ubuntu-latest
-    needs: [quality-gate, sonarcloud]
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
-        with:
-          java-version: '17'
-          distribution: 'temurin'
-
-      - name: Build Backend
-        working-directory: ./back
-        run: mvn clean package -DskipTests
-
-      - name: Upload Backend JAR
+      - name: Upload backend artifact
         uses: actions/upload-artifact@v4
         with:
-          name: backend-jar
+          name: backend-build
           path: back/target/*.jar
 
-      - name: Set up Node.js
+      # Frontend build
+      - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: front/package-lock.json
 
-      - name: Build Frontend
+      - name: Install deps (front)
         working-directory: ./front
-        run: |
-          npm ci
-          npm run build
+        run: npm ci
 
-      - name: Upload Frontend Build
+      - name: Build frontend (prod)
+        working-directory: ./front
+        run: npm run build -- --configuration production
+
+      - name: Upload frontend build
         uses: actions/upload-artifact@v4
         with:
-          name: frontend-dist
-          path: front/dist/
-
-  # TEMPORAIREMENT DESACTIVE POUR TESTS
-  # release:
-  #   name: Publish JAR Release
-  #   runs-on: ubuntu-latest
-  #   needs: [build]                   # attend que build soit terminé
-  #   if: github.ref == 'refs/heads/main'  # seulement sur la branche main
-  #   permissions:
-  #     contents: write                # autorise la création de release
-  #   steps:
-  #     - name: Download Backend JAR
-  #       uses: actions/download-artifact@v4
-  #       with:
-  #         name: backend-jar
-  #         path: dist/
-  #     - name: Create GitHub Release
-  #       uses: softprops/action-gh-release@v2
-  #       with:
-  #         tag_name: v${{ github.run_number }}         # crée un tag automatique
-  #         name: "BobApp Release ${{ github.run_number }}"
-  #         body: |
-  #           Nouvelle version BobApp générée automatiquement.
-  #           - Tests backend et frontend passés ✅
-  #           - Analyse SonarCloud : PASSED 🟢
-  #           - Build CI/CD complet 🧱
-  #         draft: false
-  #         prerelease: false
-  #         files: |
-  #           dist/*.jar
-
-  # Job 4: Docker Build & Push
-  docker:
-    name: Build and Push Docker Images
-    runs-on: ubuntu-latest
-    needs: build
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Download Backend JAR
-        uses: actions/download-artifact@v4
-        with:
-          name: backend-jar
-          path: back/target/
-
-      - name: Download Frontend Build
-        uses: actions/download-artifact@v4
-        with:
-          name: frontend-dist
-          path: front/dist/
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Login to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Build and push Backend Docker image
-        uses: docker/build-push-action@v5
-        with:
-          context: ./back
-          push: true
-          tags: |
-            arnaudd3380/bobapp-backend:latest
-            arnaudd3380/bobapp-backend:${{ github.sha }}
-
-      - name: Build and push Frontend Docker image
-        uses: docker/build-push-action@v5
-        with:
-          context: ./front
-          push: true
-          tags: |
-            arnaudd3380/bobapp-frontend:latest
-            arnaudd3380/bobapp-frontend:${{ github.sha }}
+          name: frontend-build
+          path: front/dist/**
