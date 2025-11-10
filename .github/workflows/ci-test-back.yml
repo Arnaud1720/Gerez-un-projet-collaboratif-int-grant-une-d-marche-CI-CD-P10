@@ -1,0 +1,224 @@
+name: CI Backend - Tests & Coverage
+
+# Ce workflow se déclenche uniquement sur la branche test-backend
+on:
+  push:
+    branches: [ test-backend ]
+  pull_request:
+    branches: [ test-backend ]
+  workflow_dispatch:
+
+env:
+  COVERAGE_THRESHOLD: 20  # Mode TEST à 20%, à augmenter à 80% en production
+
+jobs:
+  # ==================== TESTS BACKEND ====================
+  backend-tests:
+    name: Backend Tests & Coverage Check
+    runs-on: ubuntu-latest
+
+    outputs:
+      coverage: ${{ steps.coverage.outputs.percentage }}
+      passed: ${{ steps.threshold.outputs.passed }}
+
+    steps:
+      # Checkout du code
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
+
+      # Setup Java avec cache Maven
+      - name:  Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'maven'
+
+      # Cache des dépendances Maven
+      - name: 📦 Cache Maven dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2/repository
+          key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            ${{ runner.os }}-maven-
+
+      # Compilation du projet
+      - name: 🔨 Compile backend project
+        working-directory: ./back
+        run: |
+          echo "Compiling backend project..."
+          mvn clean compile
+          echo "✅ Compilation successful"
+
+      # Tests unitaires avec JaCoCo
+      - name: 🧪 Run tests with JaCoCo coverage
+        working-directory: ./back
+        run: |
+          echo "Running backend tests with coverage..."
+          mvn test jacoco:report
+          echo "✅ Tests completed"
+
+      # Calcul du pourcentage de coverage
+      - name: 📊 Calculate coverage percentage
+        id: coverage
+        working-directory: ./back
+        run: |
+          COVERAGE=0
+          
+          # Méthode 1: Essayer de parser le rapport HTML
+          if [ -f "target/site/jacoco/index.html" ]; then
+            COVERAGE=$(grep -oP 'Total.*?(\d+)%' target/site/jacoco/index.html | grep -oP '\d+' | head -1 || echo "0")
+          fi
+          
+          # Méthode 2: Si pas de résultat, parser le XML
+          if [ "$COVERAGE" -eq "0" ] && [ -f "target/site/jacoco/jacoco.xml" ]; then
+            MISSED=$(grep -o 'type="LINE"[^>]*missed="[0-9]*"' target/site/jacoco/jacoco.xml | grep -o 'missed="[0-9]*"' | cut -d'"' -f2 | paste -sd+ | bc)
+            COVERED=$(grep -o 'type="LINE"[^>]*covered="[0-9]*"' target/site/jacoco/jacoco.xml | grep -o 'covered="[0-9]*"' | cut -d'"' -f2 | paste -sd+ | bc)
+          
+            if [ "$((MISSED + COVERED))" -gt 0 ]; then
+              COVERAGE=$(( (COVERED * 100) / (MISSED + COVERED) ))
+            fi
+          
+            echo "   Lines covered: $COVERED"
+            echo "   Lines missed: $MISSED"
+          fi
+          
+          echo "percentage=$COVERAGE" >> "$GITHUB_OUTPUT"
+          echo "📊 Backend Coverage: ${COVERAGE}%"
+
+      # Vérification du seuil de coverage
+      - name: 🎯 Check coverage threshold
+        id: threshold
+        run: |
+          COVERAGE=${{ steps.coverage.outputs.percentage }}
+          THRESHOLD=${{ env.COVERAGE_THRESHOLD }}
+          
+          if [ "$COVERAGE" -ge "$THRESHOLD" ]; then
+            echo "✅ Coverage ${COVERAGE}% meets threshold ${THRESHOLD}%"
+            echo "🟢 TEST MODE: Threshold set to ${THRESHOLD}% for testing"
+            echo "passed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "❌ Coverage ${COVERAGE}% is below threshold ${THRESHOLD}%"
+            echo "🔴 TEST MODE: Please improve test coverage"
+            echo "passed=false" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+      # Upload des rapports de coverage
+      - name: 📤 Upload JaCoCo reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: backend-coverage-${{ github.sha }}
+          path: |
+            back/target/site/jacoco/
+            back/target/surefire-reports/
+          retention-days: 30
+
+      # Upload du rapport XML pour SonarCloud
+      - name: 📤 Upload JaCoCo XML for SonarCloud
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: jacoco-xml-${{ github.sha }}
+          path: back/target/site/jacoco/jacoco.xml
+          retention-days: 7
+
+      # Génération du summary
+      - name: 📊 Generate job summary
+        if: always()
+        run: |
+          COVERAGE=${{ steps.coverage.outputs.percentage }}
+          THRESHOLD=${{ env.COVERAGE_THRESHOLD }}
+          PASSED=${{ steps.threshold.outputs.passed }}
+          
+          if [[ "$PASSED" == "true" ]]; then
+            STATUS="✅ PASSED"
+            COLOR="green"
+          else
+            STATUS="❌ FAILED"
+            COLOR="red"
+          fi
+          
+          cat >> $GITHUB_STEP_SUMMARY <<EOF
+          # Backend Test Results
+          
+          ## Coverage Report
+          
+          | Metric | Value | Status |
+          |--------|-------|--------|
+          | Coverage | **${COVERAGE}%** | $STATUS |
+          | Threshold | ${THRESHOLD}% | - |
+          | Branch | test-backend | - |
+          | Commit | \`${GITHUB_SHA:0:7}\` | - |
+          
+          ## JaCoCo Report
+          
+          The full JaCoCo coverage report has been uploaded as an artifact.
+          
+          ## Next Steps
+          
+          EOF
+          
+          if [[ "$PASSED" == "true" ]]; then
+            echo "✅ Backend tests passed! Ready to merge to main branch." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ Coverage is below threshold. Please add more tests before merging." >> $GITHUB_STEP_SUMMARY
+          fi
+
+      # Commentaire sur la PR
+      - name: 💬 PR Comment with results
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const coverage = ${{ steps.coverage.outputs.percentage }};
+            const threshold = ${{ env.COVERAGE_THRESHOLD }};
+            const passed = ${{ steps.threshold.outputs.passed }};
+            
+            const icon = passed ? '✅' : '❌';
+            const status = passed ? 'PASSED' : 'FAILED';
+            
+            const comment = `## ${icon} Backend Coverage Report
+            
+            | Metric | Value |
+            |--------|-------|
+            | **Coverage** | ${coverage}% |
+            | **Threshold** | ${threshold}% |
+            | **Status** | ${status} |
+            | **Branch** | test-backend |
+            
+            ${!passed ? 
+              '> ⚠️ Please improve test coverage to meet the minimum threshold before merging.' : 
+              '> ✅ Great job! Coverage requirements met. Ready to merge to main.'}
+            
+            _Test mode: Threshold set to ${threshold}% for testing purposes_`;
+            
+            // Find and update existing comment or create new one
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number
+            });
+            
+            const botComment = comments.find(comment => 
+              comment.user.type === 'Bot' && 
+              comment.body.includes('Backend Coverage Report')
+            );
+            
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: comment
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: comment
+              });
+            }

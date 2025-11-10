@@ -1,0 +1,213 @@
+name: CI Frontend - Tests & Coverage
+
+# Ce workflow se déclenche uniquement sur la branche test-frontend
+on:
+  push:
+    branches: [ test-frontend ]
+  pull_request:
+    branches: [ test-frontend ]
+  workflow_dispatch:
+
+env:
+  COVERAGE_THRESHOLD: 20  # Mode TEST à 20%, à augmenter à 80% en production
+
+jobs:
+  # ==================== TESTS FRONTEND ====================
+  frontend-tests:
+    name: Frontend Tests & Coverage Check
+    runs-on: ubuntu-latest
+
+    outputs:
+      coverage: ${{ steps.coverage.outputs.percentage }}
+      passed: ${{ steps.threshold.outputs.passed }}
+
+    steps:
+      # Checkout du code
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
+
+      # Setup Node.js avec cache npm
+      - name: 🔧 Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: front/package-lock.json
+
+      # Installation des dépendances
+      - name: 📦 Install dependencies
+        working-directory: ./front
+        run: |
+          echo "Installing npm dependencies..."
+          npm ci --prefer-offline --no-audit
+          echo "✅ Dependencies installed"
+
+      # Linting (optionnel mais recommandé)
+      - name: 🔍 Run linting
+        working-directory: ./front
+        run: |
+          if npm run lint --if-present; then
+            echo "✅ Linting passed"
+          else
+            echo "⚠️ Linting not configured or has warnings"
+          fi
+        continue-on-error: true
+
+      # Tests unitaires avec coverage
+      - name: 🧪 Run tests with coverage
+        working-directory: ./front
+        run: |
+          echo "Running frontend tests with coverage..."
+          npm run test -- --watch=false --browsers=ChromeHeadless --code-coverage
+          echo "✅ Tests completed"
+
+      # Calcul du pourcentage de coverage
+      - name: 📊 Calculate coverage percentage
+        id: coverage
+        working-directory: ./front
+        run: |
+          # Recherche du fichier de coverage
+          COVERAGE=0
+          
+          # Essayer plusieurs emplacements possibles
+          if [ -f "coverage/index.html" ]; then
+            COVERAGE=$(grep -oP '\d+\.\d+(?=%)' coverage/index.html | head -1 | cut -d. -f1 || echo "0")
+          elif [ -f "coverage/lcov-report/index.html" ]; then
+            COVERAGE=$(grep -oP '\d+\.\d+(?=%)' coverage/lcov-report/index.html | head -1 | cut -d. -f1 || echo "0")
+          elif [ -f "coverage/coverage-summary.json" ]; then
+            COVERAGE=$(node -pe "Math.floor(require('./coverage/coverage-summary.json').total.lines.pct)" || echo "0")
+          elif [ -f "coverage/lcov.info" ]; then
+            COVERAGE=$(awk -F: '
+              /^SF:/ { files++ }
+              /^LH:/ { hits += $2 }
+              /^LF:/ { found += $2 }
+              END { 
+                if (found > 0) printf "%.0f\n", (hits / found) * 100
+                else print "0"
+              }
+            ' coverage/lcov.info)
+          fi
+          
+          echo "percentage=$COVERAGE" >> "$GITHUB_OUTPUT"
+          echo "📊 Frontend Coverage: ${COVERAGE}%"
+
+      # Vérification du seuil de coverage
+      - name: 🎯 Check coverage threshold
+        id: threshold
+        run: |
+          COVERAGE=${{ steps.coverage.outputs.percentage }}
+          THRESHOLD=${{ env.COVERAGE_THRESHOLD }}
+          
+          if [ "$COVERAGE" -ge "$THRESHOLD" ]; then
+            echo "✅ Coverage ${COVERAGE}% meets threshold ${THRESHOLD}%"
+            echo "🟢 TEST MODE: Threshold set to ${THRESHOLD}% for testing"
+            echo "passed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "❌ Coverage ${COVERAGE}% is below threshold ${THRESHOLD}%"
+            echo "🔴 TEST MODE: Please improve test coverage"
+            echo "passed=false" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+      # Upload des rapports de coverage
+      - name: 📤 Upload coverage reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: frontend-coverage-${{ github.sha }}
+          path: front/coverage/
+          retention-days: 30
+
+      # Génération du summary
+      - name: 📊 Generate job summary
+        if: always()
+        run: |
+          COVERAGE=${{ steps.coverage.outputs.percentage }}
+          THRESHOLD=${{ env.COVERAGE_THRESHOLD }}
+          PASSED=${{ steps.threshold.outputs.passed }}
+          
+          if [[ "$PASSED" == "true" ]]; then
+            STATUS="✅ PASSED"
+            COLOR="green"
+          else
+            STATUS="❌ FAILED"
+            COLOR="red"
+          fi
+          
+          cat >> $GITHUB_STEP_SUMMARY <<EOF
+          # Frontend Test Results
+          
+          ## Coverage Report
+          
+          | Metric | Value | Status |
+          |--------|-------|--------|
+          | Coverage | **${COVERAGE}%** | $STATUS |
+          | Threshold | ${THRESHOLD}% | - |
+          | Branch | test-frontend | - |
+          | Commit | \`${GITHUB_SHA:0:7}\` | - |
+          
+          ## Next Steps
+          
+          EOF
+          
+          if [[ "$PASSED" == "true" ]]; then
+            echo "✅ Frontend tests passed! Ready to merge to main branch." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ Coverage is below threshold. Please add more tests before merging." >> $GITHUB_STEP_SUMMARY
+          fi
+
+      # Commentaire sur la PR
+      - name: 💬 PR Comment with results
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const coverage = ${{ steps.coverage.outputs.percentage }};
+            const threshold = ${{ env.COVERAGE_THRESHOLD }};
+            const passed = ${{ steps.threshold.outputs.passed }};
+            
+            const icon = passed ? '✅' : '❌';
+            const status = passed ? 'PASSED' : 'FAILED';
+            
+            const comment = `## ${icon} Frontend Coverage Report
+            
+            | Metric | Value |
+            |--------|-------|
+            | **Coverage** | ${coverage}% |
+            | **Threshold** | ${threshold}% |
+            | **Status** | ${status} |
+            | **Branch** | test-frontend |
+            
+            ${!passed ? 
+              '> ⚠️ Please improve test coverage to meet the minimum threshold before merging.' : 
+              '> ✅ Great job! Coverage requirements met. Ready to merge to main.'}
+            
+            _Test mode: Threshold set to ${threshold}% for testing purposes_`;
+            
+            // Find and update existing comment or create new one
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number
+            });
+            
+            const botComment = comments.find(comment => 
+              comment.user.type === 'Bot' && 
+              comment.body.includes('Frontend Coverage Report')
+            );
+            
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: comment
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: comment
+              });
+            }
