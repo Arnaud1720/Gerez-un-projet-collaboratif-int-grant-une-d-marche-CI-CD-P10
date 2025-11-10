@@ -81,16 +81,16 @@ jobs:
           echo "coverage=$COVERAGE" >> $GITHUB_OUTPUT
           echo "📊 Frontend Coverage: $COVERAGE%"
 
-          # VERIFICATION STRICTE DU COVERAGE POUR LA BRANCHE MAIN - TEMPORAIREMENT DESACTIVEE
+        # VERIFICATION STRICTE DU COVERAGE POUR LA BRANCHE MAIN - TEMPORAIREMENT DESACTIVEE
           # Cette vérification bloque le déploiement si le coverage frontend < 80%
           # if [ "$COVERAGE" -lt 80 ]; then
-          #   echo "❌ DEPLOYMENT BLOCKED: Frontend coverage ($COVERAGE%) < 80%"
-          #   echo "⛔ Cannot merge to main branch with insufficient code coverage"
+          #   echo " DEPLOYMENT BLOCKED: Frontend coverage ($COVERAGE%) < 80%"
+          #   echo " Cannot merge to main branch with insufficient code coverage"
           #   exit 1
           # else
           #   echo "✅ Frontend coverage requirement met ($COVERAGE% >= 80%)"
           # fi
-          echo "⚠️ Frontend coverage check temporarily disabled for testing"
+        #echo "⚠️ Frontend coverage check temporarily disabled for testing"
 
       - name: Upload Backend Coverage Report
         uses: actions/upload-artifact@v4
@@ -145,7 +145,7 @@ jobs:
         working-directory: ./back
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-        run: mvn -B verify org.sonarsource.scanner.maven:sonar-maven-plugin:sonar -Dsonar.projectKey=Arnaud1720_Gerez-un-projet-collaboratif-int-grant-une-d-marche-CI-CD-P10
+        run: mvn -B verify org.sonarsource.scanner.maven:sonar-maven-plugin:sonar -Dsonar.projectKey=Arnaud1720_Gerez-un-projet-collaboratif-int-grant-une-d-marche-CI-CD-P10 -Dsonar.organization=arnaud1720 -Dsonar.host.url=https://sonarcloud.io
 
   # Job 3: Build
   build:
@@ -211,7 +211,7 @@ jobs:
   #         tag_name: v${{ github.run_number }}         # crée un tag automatique
   #         name: "BobApp Release ${{ github.run_number }}"
   #         body: |
-  #           🚀 Nouvelle version BobApp générée automatiquement.
+  #            Nouvelle version BobApp générée automatiquement.
   #           - Tests backend et frontend passés ✅
   #           - Analyse SonarCloud : PASSED 🟢
   #           - Build CI/CD complet 🧱
@@ -269,20 +269,3 @@ jobs:
           tags: |
             arnaudd3380/bobapp-frontend:latest
             arnaudd3380/bobapp-frontend:${{ github.sha }}
-  # Job 6: Metrics
-  kpi-dashboard:
-    name: Generate KPI Dashboard
-    runs-on: ubuntu-latest
-    needs: [docker]
-    steps:
-      - name: Display CI/CD KPIs
-        run: |
-          echo "📊 --- CI/CD KPIs ---"
-          echo "⏱️ Pipeline duration ≈ 6 min"
-          echo "🧪 Coverage: 38.8% (objectif 80%)"
-          echo "🚦 Quality Gate: PASSED"
-          echo "🐞 Bugs: 0 | 🔒 Vulnérabilités: 0 | 💨 Code Smells: 9"
-          echo "📦 Docker image size (backend): ~350 MB"
-          echo "🔁 Deployment frequency: daily on main"
-          echo "✅ Success rate: 100% (last 5 runs)"
-          echo "🚀 --- Keep improving! ---"

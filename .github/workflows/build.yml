@@ -33,4 +33,4 @@ jobs:
       - name: Build and analyze
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-        run: mvn -B verify org.sonarsource.scanner.maven:sonar-maven-plugin:sonar -Dsonar.projectKey=Arnaud1720_Gerez-un-projet-collaboratif-int-grant-une-d-marche-CI-CD-P10
+        run: mvn -B verify org.sonarsource.scanner.maven:sonar-maven-plugin:sonar -Dsonar.projectKey=Arnaud1720_Gerez-un-projet-collaboratif-int-grant-une-d-marche-CI-CD-P10 -Dsonar.organization=arnaud1720 -Dsonar.host.url=https://sonarcloud.io
