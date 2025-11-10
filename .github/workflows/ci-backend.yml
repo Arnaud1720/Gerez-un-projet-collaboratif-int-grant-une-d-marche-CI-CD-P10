@@ -46,7 +46,7 @@ jobs:
           COVERAGE=$(grep -oP 'Total.*?(\d+)%' target/site/jacoco/index.html | grep -oP '\d+' | head -1 || echo "0")
           echo "coverage=$COVERAGE" >> $GITHUB_OUTPUT
           echo "Backend Coverage: $COVERAGE%"
-
+ 
       - name: Upload Backend Coverage Report
         uses: actions/upload-artifact@v4
         with:
