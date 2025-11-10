@@ -3,6 +3,8 @@ on:
   push:
     branches:
       - main
+      - test-frontend
+      - -test-backend
   pull_request:
     types: [opened, synchronize, reopened]
 jobs:
