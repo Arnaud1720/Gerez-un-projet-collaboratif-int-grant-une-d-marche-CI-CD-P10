@@ -1,197 +1,115 @@
-name: Main - Coverage, Build & Push to Docker Hub
+name: Main - Gate on Coverage (80%+) then Docker Push
 
 on:
   push:
     branches: [ main ]
 
 env:
-  NODE_VERSION: 20
-  JAVA_VERSION: '17'
-  # Nom des images Docker (modifiez à votre guise)
   IMAGE_BACK: app-back
   IMAGE_FRONT: app-front
 
 jobs:
-  backend-coverage:
-    name: Backend • Tests + JaCoCo report
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+  frontend:
+    name: Call • Frontend Tests
+    uses: ./.github/workflows/ci-frontend.yml
+    with:
+      node_version: "20"
+      threshold: 80
+    secrets: inherit  # si jamais tu lis des secrets dans le front (rare)
 
-      - name: Setup Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: ${{ env.JAVA_VERSION }}
-          cache: maven
-
-      - name: Test backend (JaCoCo)
-        working-directory: ./back
-        run: mvn -B clean test jacoco:report
-
-      - name: Upload JaCoCo report
-        uses: actions/upload-artifact@v4
-        with:
-          name: backend-jacoco
-          path: |
-            back/target/site/jacoco/jacoco.xml
-            back/target/site/jacoco/**
-
-  frontend-coverage:
-    name: Frontend • Tests + Coverage report
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: 'npm'
-          cache-dependency-path: front/package-lock.json
-
-      - name: Install deps
-        working-directory: ./front
-        run: npm ci
-
-      - name: Test frontend (with coverage)
-        working-directory: ./front
-        run: |
-          npm run test -- --watch=false --browsers=ChromeHeadless --code-coverage
-
-      - name: Upload coverage (Angular/Istanbul)
-        uses: actions/upload-artifact@v4
-        with:
-          name: frontend-coverage
-          path: |
-            front/coverage/**/coverage-summary.json
-            front/coverage/**/lcov.info
-            front/coverage/**/index.html
-            front/coverage/**
-
-      # (info log seulement)
-      - name: Log coverage %
-        working-directory: ./front
-        shell: bash
-        run: |
-          set -euo pipefail
-          JSON_REPORT=$(find coverage -type f -name "coverage-summary.json" -print -quit || true)
-          if [[ -n "${JSON_REPORT}" ]]; then
-            PCT=$(node -e "console.log(Math.floor(require(process.argv[1]).total.lines.pct))" "$JSON_REPORT")
-          else
-            PCT=0
-          fi
-          echo "📊 Frontend coverage: ${PCT}%"
-
-  build:
-    name: Build • Back & Front
-    needs: [ backend-coverage, frontend-coverage ]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      # Backend build (sans relancer les tests)
-      - name: Setup Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: ${{ env.JAVA_VERSION }}
-          cache: maven
-
-      - name: Build backend (skip tests)
-        working-directory: ./back
-        run: mvn -B -DskipTests package
-
-      - name: Upload backend artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: backend-build
-          path: back/target/*.jar
-
-      # Frontend build
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: 'npm'
-          cache-dependency-path: front/package-lock.json
-
-      - name: Install deps (front)
-        working-directory: ./front
-        run: npm ci
-
-      - name: Build frontend (prod)
-        working-directory: ./front
-        run: npm run build -- --configuration production
-
-      - name: Upload frontend build
-        uses: actions/upload-artifact@v4
-        with:
-          name: frontend-build
-          path: front/dist/**
+  backend:
+    name: Call • Backend Tests
+    uses: ./.github/workflows/ci-backend.yml
+    with:
+      java_version: "17"
+      threshold: 80
+    secrets: inherit
 
   docker-publish:
-    name: Docker • Build & Push to Docker Hub
-    needs: build
+    name: Docker • Build & Push
+    needs: [ frontend, backend ]
+    # on ne continue que si front.ok && back.ok == true
+    if: ${{ fromJSON(needs.frontend.outputs.ok) && fromJSON(needs.backend.outputs.ok) }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set image names
+      # Option A : multi-stage Dockerfiles qui rebuildent tout (simple)
+      # -> pas besoin de récupérer les artefacts de build
+
+      - name: Normalize Docker Hub username
+        id: norm
+        shell: bash
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+        run: |
+          if [ -z "${DOCKERHUB_USERNAME}" ]; then
+            echo "❌ Secret DOCKERHUB_USERNAME manquant."
+            exit 1
+          fi
+          USER="$(printf '%s' "$DOCKERHUB_USERNAME" | tr -d '[:space:]')"
+          USER="$(printf '%s' "$USER" | tr '[:upper:]' '[:lower:]')"
+          echo "user=$USER" >> "$GITHUB_OUTPUT"
+
+      - name: Compute tags
         id: img
         shell: bash
         run: |
-          # Repo Docker Hub = <username>/<image>
-          echo "BACK_IMAGE=${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_BACK }}" >> $GITHUB_OUTPUT
-          echo "FRONT_IMAGE=${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_FRONT }}" >> $GITHUB_OUTPUT
-          # Tags: latest + sha court
-          SHORT_SHA=$(echo "${GITHUB_SHA}" | cut -c1-7)
-          echo "TAG1=latest" >> $GITHUB_OUTPUT
-          echo "TAG2=${SHORT_SHA}" >> $GITHUB_OUTPUT
+          SHORT_SHA="$(echo "${GITHUB_SHA}" | cut -c1-7)"
+          echo "back_repo=${{ steps.norm.outputs.user }}/${{ env.IMAGE_BACK }}" >> "$GITHUB_OUTPUT"
+          echo "front_repo=${{ steps.norm.outputs.user }}/${{ env.IMAGE_FRONT }}" >> "$GITHUB_OUTPUT"
+          echo "tag_latest=latest" >> "$GITHUB_OUTPUT"
+          echo "tag_sha=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
 
-      - name: Set up QEMU (optional for multi-arch)
+      - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
-      - name: Set up Docker Buildx
+      - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
 
       - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          username: ${{ steps.norm.outputs.user }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       # Backend image
-      - name: Build & Push Backend image
+      - name: Build & Push Backend
         uses: docker/build-push-action@v6
         with:
           context: ./back
           file: ./back/Dockerfile
           push: true
-          # pour multi-arch, décommentez:
-          # platforms: linux/amd64,linux/arm64
           tags: |
-            ${{ steps.img.outputs.BACK_IMAGE }}:${{ steps.img.outputs.TAG1 }}
-            ${{ steps.img.outputs.BACK_IMAGE }}:${{ steps.img.outputs.TAG2 }}
+            ${{ steps.img.outputs.back_repo }}:${{ steps.img.outputs.tag_latest }}
+            ${{ steps.img.outputs.back_repo }}:${{ steps.img.outputs.tag_sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          labels: |
-            org.opencontainers.image.source=${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
 
       # Frontend image
-      - name: Build & Push Frontend image
+      - name: Build & Push Frontend
         uses: docker/build-push-action@v6
         with:
           context: ./front
           file: ./front/Dockerfile
           push: true
-          # platforms: linux/amd64,linux/arm64
           tags: |
-            ${{ steps.img.outputs.FRONT_IMAGE }}:${{ steps.img.outputs.TAG1 }}
-            ${{ steps.img.outputs.FRONT_IMAGE }}:${{ steps.img.outputs.TAG2 }}
+            ${{ steps.img.outputs.front_repo }}:${{ steps.img.outputs.tag_latest }}
+            ${{ steps.img.outputs.front_repo }}:${{ steps.img.outputs.tag_sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          labels: |
-            org.opencontainers.image.source=${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
+
+  # Si l’un des deux coverage < 80%, on échoue explicitement avec un message clair
+  gate-fail-message:
+    name: Gate failed (coverage < 80%)
+    needs: [ frontend, backend ]
+    if: ${{ !(fromJSON(needs.frontend.outputs.ok) && fromJSON(needs.backend.outputs.ok)) }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Show reason
+        run: |
+          echo "❌ Coverage gate failed."
+          echo "Frontend: ${{ needs.frontend.outputs.coverage }}%"
+          echo "Backend : ${{ needs.backend.outputs.coverage }}%"
+          echo "Seuil requis: 80%"
+          exit 1

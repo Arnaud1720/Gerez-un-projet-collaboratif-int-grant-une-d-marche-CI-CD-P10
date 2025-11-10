@@ -1,80 +1,85 @@
-name: CI Frontend Tests
+name: Reusable - Frontend Tests & Coverage
 
 on:
-  # Tests déclenchés automatiquement toutes les heures
-  schedule:
-    - cron: '0 * * * *'  # Toutes les heures
-  # Tests sur push/PR vers la branche test-frontend
-  push:
-    branches: [ test-frontend ]
-  pull_request:
-    branches: [ test-frontend ]
-  # Permet de déclencher manuellement
-  workflow_dispatch:
+  workflow_call:
+    inputs:
+      node_version:
+        type: string
+        default: "20"
+      threshold:
+        type: number
+        default: 80
+    outputs:
+      coverage:
+        description: "Frontend coverage percentage (integer)"
+        value: ${{ jobs.front.outputs.coverage }}
+      ok:
+        description: "true if coverage >= threshold"
+        value: ${{ jobs.front.outputs.ok }}
 
 jobs:
-  test-frontend:
-    name: Frontend Tests & Coverage
+  front:
+    name: Frontend • Tests + Coverage
     runs-on: ubuntu-latest
-
+    outputs:
+      coverage: ${{ steps.setout.outputs.coverage }}
+      ok: ${{ steps.setout.outputs.ok }}
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Node.js
+      - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: ${{ inputs.node_version }}
           cache: 'npm'
           cache-dependency-path: front/package-lock.json
 
-      - name: Install dependencies
+      - name: Install deps
         working-directory: ./front
         run: npm ci
 
-      - name: Run Frontend Tests with Coverage
+      - name: Test (with coverage)
         working-directory: ./front
-        run: npm run test -- --watch=false --code-coverage --browsers=ChromeHeadless
+        run: npm run test -- --watch=false --browsers=ChromeHeadless --code-coverage
 
-      - name: Extract Coverage Percentage
-        id: coverage
+      - name: Compute coverage %
+        id: cov
         working-directory: ./front
+        shell: bash
         run: |
-          # Extraction du taux de couverture depuis le rapport de coverage
-          if [ -f "coverage/index.html" ]; then
-            COVERAGE=$(grep -oP '\d+\.\d+(?=%)' coverage/index.html | head -1 | cut -d. -f1 || echo "0")
-          elif [ -f "coverage/lcov-report/index.html" ]; then
-            COVERAGE=$(grep -oP '\d+\.\d+(?=%)' coverage/lcov-report/index.html | head -1 | cut -d. -f1 || echo "0")
+          set -euo pipefail
+          JSON_REPORT=$(find coverage -type f -name "coverage-summary.json" -print -quit || true)
+          if [[ -z "${JSON_REPORT}" ]]; then
+            # fallback via lcov.info
+            LCOV=$(find coverage -type f -name "lcov.info" -print -quit || true)
+            if [[ -n "${LCOV}" ]]; then
+              PCT=$(awk 'BEGIN{lh=0;lf=0} /^LH:/{sub("LH:","",$1);lh+=$1} /^LF:/{sub("LF:","",$1);lf+=$1} END{if(lf>0) printf("%d",(lh*100)/lf); else print 0}' "$LCOV")
+            else
+              PCT=0
+            fi
           else
-            COVERAGE="0"
+            PCT=$(node -e "console.log(Math.floor(require(process.argv[1]).total.lines.pct))" "$JSON_REPORT")
           fi
-          echo "coverage=$COVERAGE" >> $GITHUB_OUTPUT
-          echo "Frontend Coverage: $COVERAGE%"
+          echo "pct=$PCT" >> "$GITHUB_OUTPUT"
+          echo "📊 Frontend coverage = ${PCT}%"
 
-      - name: Upload Frontend Coverage Report
+      - name: Set outputs
+        id: setout
+        shell: bash
+        run: |
+          TH=${{ inputs.threshold }}
+          PCT=${{ steps.cov.outputs.pct }}
+          OK=false
+          if [ "$PCT" -ge "$TH" ]; then OK=true; fi
+          echo "coverage=$PCT" >> "$GITHUB_OUTPUT"
+          echo "ok=$OK" >> "$GITHUB_OUTPUT"
+
+      - name: Upload coverage artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: frontend-coverage-${{ github.run_number }}
-          path: front/coverage/
-
-      - name: Comment Coverage on PR
-        if: github.event_name == 'pull_request'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const coverage = '${{ steps.coverage.outputs.coverage }}';
-            const threshold = 80;
-            const status = coverage >= threshold ? '✅' : '❌';
-
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: `## ${status} Frontend Coverage Report\n\n**Coverage:** ${coverage}%\n**Threshold:** ${threshold}%\n\n${coverage >= threshold ? 'Coverage requirement met!' : 'Coverage below required threshold!'}`
-            })
-
-      - name: Display Test Summary
-        run: |
-          echo " Frontend Tests Complete"
-          echo " Coverage: ${{ steps.coverage.outputs.coverage }}%"
-          echo " Target: 80%"
+          name: frontend-coverage
+          path: |
+            front/coverage/**/coverage-summary.json
+            front/coverage/**/lcov.info
+            front/coverage/**/index.html
+            front/coverage/**
