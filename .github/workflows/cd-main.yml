@@ -20,18 +20,17 @@ env:
   COVERAGE_THRESHOLD: "20"
 
 jobs:
-  quality-gate:
-    name: Étape 1-3 • Tests + coverage + upload rapports
+  # Etape 1: Tests Backend
+  backend-tests:
+    name: Etape 1 - Tests Backend
     runs-on: ubuntu-latest
     outputs:
-      backend_coverage: ${{ steps.outs.outputs.backend_coverage }}
-      frontend_coverage: ${{ steps.outs.outputs.frontend_coverage }}
+      coverage: ${{ steps.cov-back.outputs.pct }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ===== BACKEND =====
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
@@ -43,7 +42,7 @@ jobs:
         working-directory: back
         run: mvn -B clean test jacoco:report
 
-      - name: Calcul coverage backend (%)
+      - name: Calcul coverage backend
         id: cov-back
         working-directory: back
         shell: bash
@@ -61,7 +60,7 @@ jobs:
           echo "pct=$PCT" >> "$GITHUB_OUTPUT"
           echo "Backend coverage: $PCT%"
 
-      - name: Vérif seuil backend
+      - name: Verification seuil backend
         shell: bash
         run: |
           if (( ${{ steps.cov-back.outputs.pct }} < ${{ env.COVERAGE_THRESHOLD }} )); then
@@ -74,7 +73,17 @@ jobs:
           name: backend-coverage
           path: back/target/site/jacoco/**
 
-      # ===== FRONTEND =====
+  # Etape 2: Tests Frontend
+  frontend-tests:
+    name: Etape 2 - Tests Frontend
+    runs-on: ubuntu-latest
+    outputs:
+      coverage: ${{ steps.cov-front.outputs.pct }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
@@ -82,52 +91,29 @@ jobs:
           cache: npm
           cache-dependency-path: front/package-lock.json
 
-      - name: Installer Chromium (pour Karma)
+      - name: Installer Chromium
         run: |
           sudo apt-get update
           (sudo apt-get install -y chromium-browser || sudo apt-get install -y chromium)
           echo "CHROME_BIN=$(which chromium-browser || which chromium)" >> $GITHUB_ENV
 
-      - name: Install deps front
+      - name: Install dependencies
         working-directory: front
         run: npm ci
 
-      - name: Tests front avec coverage
+      - name: Tests avec coverage
         working-directory: front
         run: npm run test -- --watch=false --browsers=ChromeHeadless --code-coverage
 
-      - name: Debug coverage (ls + aperçus)
-        working-directory: front
-        shell: bash
-        run: |
-          set -e
-          echo "PWD=$(pwd)"
-          echo "--- tree coverage ---"
-          find coverage -maxdepth 3 -type f -print || true
-          echo "--- Aperçu coverage-summary.json ---"
-          SUMMARY=$(find coverage -type f -name "coverage-summary.json" -print -quit || true)
-          if [[ -n "$SUMMARY" ]]; then
-            head -c 1000 "$SUMMARY" || true
-            echo "--- fin summary ---"
-          fi
-          echo "--- Aperçu lcov.info ---"
-          LCOV=$(find coverage -type f -name "lcov.info" -print -quit || true)
-          if [[ -n "$LCOV" ]]; then
-            head -n 20 "$LCOV" || true
-            echo "--- fin lcov ---"
-          fi
-
-      - name: Calcul coverage frontend (%)
+      - name: Calcul coverage frontend
         id: cov-front
         working-directory: front
         shell: bash
         run: |
           set -euo pipefail
-
-          # 1) coverage-summary.json (Istanbul)
           JSON=$(find coverage -type f -name "coverage-summary.json" -print -quit || true)
           if [[ -n "$JSON" ]]; then
-            echo "coverage-summary.json trouvé: $JSON"
+            echo "coverage-summary.json trouve: $JSON"
             PCT=$(node -e '
               try {
                 const s=require(process.argv[1]);
@@ -137,14 +123,13 @@ jobs:
               } catch(e){console.log(0);}
             ' "$JSON")
           else
-            # 2) lcov.info (Istanbul): compter DA:<line>,<hits>
             LCOV=$(find coverage -type f -name "lcov.info" -print -quit || true)
             if [[ -n "$LCOV" ]]; then
-              echo "lcov.info trouvé: $LCOV"
+              echo "lcov.info trouve: $LCOV"
               read TOTAL COVERED <<<"$(awk -F, '
                 /^DA:/ {
-                  split($0,a,":");       # a[2] = "<line>,<hits>"
-                  split(a[2],b,",");     # b[1]=line, b[2]=hits
+                  split($0,a,":");
+                  split(a[2],b,",");
                   total++; if (b[2]+0 > 0) covered++;
                 }
                 END { printf "%d %d", total, covered }
@@ -155,15 +140,13 @@ jobs:
                 PCT=0
               fi
             else
-              echo "⚠️ Aucun rapport coverage trouvé sous $(pwd)/coverage/"
               PCT=0
             fi
           fi
-
           echo "pct=$PCT" >> "$GITHUB_OUTPUT"
           echo "Frontend coverage: $PCT%"
 
-      - name: Vérif seuil frontend
+      - name: Verification seuil frontend
         shell: bash
         run: |
           if (( ${{ steps.cov-front.outputs.pct }} < ${{ env.COVERAGE_THRESHOLD }} )); then
@@ -176,34 +159,38 @@ jobs:
           name: frontend-coverage
           path: front/coverage/**
 
-      - name: Expose outputs
-        id: outs
-        run: |
-          echo "backend_coverage=${{ steps.cov-back.outputs.pct }}" >> "$GITHUB_OUTPUT"
-          echo "frontend_coverage=${{ steps.cov-front.outputs.pct }}" >> "$GITHUB_OUTPUT"
-
-  # === Étape SonarCloud ===
+  # Etape 3: Analyse SonarCloud
   sonarcloud:
-    name: Étape 4 • Analyse SonarCloud
+    name: Etape 3 - Analyse SonarCloud
     runs-on: ubuntu-latest
-    needs: quality-gate
+    needs: [backend-tests, frontend-tests]
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Télécharger coverage backend
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: maven
+
+      - name: Telecharger coverage backend
         uses: actions/download-artifact@v4
         with:
           name: backend-coverage
           path: back/target/site/jacoco/
 
-      - name: Télécharger coverage frontend
+      - name: Telecharger coverage frontend
         uses: actions/download-artifact@v4
         with:
           name: frontend-coverage
           path: front/coverage/
 
-      - name: Analyse SonarCloud (Maven)
+      - name: Analyse SonarCloud
         working-directory: back
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
