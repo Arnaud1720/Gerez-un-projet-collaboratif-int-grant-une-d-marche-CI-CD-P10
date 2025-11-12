@@ -98,12 +98,15 @@ jobs:
         run: |
           JSON=$(find coverage -type f -name "coverage-summary.json" -print -quit || true)
           if [[ -n "$JSON" ]]; then
+            echo "Fichier coverage trouvé: $JSON"
             PCT=$(node -e "console.log(Math.floor(require(process.argv[1]).total.lines.pct))" "$JSON")
           else
             LCOV=$(find coverage -type f -name "lcov.info" -print -quit || true)
             if [[ -n "$LCOV" ]]; then
-              PCT=$(awk 'BEGIN{lh=0;lf=0} /^LH:/{sub("LH:","",$1);lh+=$1} /^LF:/{sub("LF:","",$1);lf+=$1} END{if(lf>0) printf("%d",(lh*100)/lf); else print 0}' "$LCOV")
+              echo "Fichier lcov trouvé: $LCOV"
+              PCT=$(awk 'BEGIN{lh=0;lf=0} /^LH:/{sub(\"LH:\",\"\",$1);lh+=$1} /^LF:/{sub(\"LF:\",\"\",$1);lf+=$1} END{if(lf>0) printf(\"%d\",(lh*100)/lf); else print 0}' "$LCOV")
             else
+              echo "️ Aucun rapport coverage trouvé sous $(pwd)/coverage/"
               PCT=0
             fi
           fi
