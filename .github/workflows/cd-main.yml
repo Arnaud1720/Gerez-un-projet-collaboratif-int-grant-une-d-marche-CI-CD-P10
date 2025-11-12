@@ -96,7 +96,6 @@ jobs:
         working-directory: front
         run: npm run test -- --watch=false --browsers=ChromeHeadless --code-coverage
 
-      # === Debug pour voir où est le coverage ===
       - name: Debug coverage (ls + aperçus)
         working-directory: front
         shell: bash
@@ -124,6 +123,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
+          # 1) coverage-summary.json (Istanbul)
           JSON=$(find coverage -type f -name "coverage-summary.json" -print -quit || true)
           if [[ -n "$JSON" ]]; then
             echo "coverage-summary.json trouvé: $JSON"
@@ -136,21 +137,29 @@ jobs:
               } catch(e){console.log(0);}
             ' "$JSON")
           else
+            # 2) lcov.info (Istanbul): compter DA:<line>,<hits>
             LCOV=$(find coverage -type f -name "lcov.info" -print -quit || true)
             if [[ -n "$LCOV" ]]; then
               echo "lcov.info trouvé: $LCOV"
-              LH=$(grep -o '^LH:[0-9]\+' "$LCOV" | awk -F: '{s+=$2} END{print s+0}')
-              LF=$(grep -o '^LF:[0-9]\+' "$LCOV" | awk -F: '{s+=$2} END{print s+0}')
-              if [[ "${LF:-0}" -gt 0 ]]; then
-                PCT=$(( (100 * LH) / LF ))
+              read TOTAL COVERED <<<"$(awk -F, '
+                /^DA:/ {
+                  split($0,a,":");       # a[2] = "<line>,<hits>"
+                  split(a[2],b,",");     # b[1]=line, b[2]=hits
+                  total++; if (b[2]+0 > 0) covered++;
+                }
+                END { printf "%d %d", total, covered }
+              ' "$LCOV")"
+              if [[ "${TOTAL:-0}" -gt 0 ]]; then
+                PCT=$(( (100 * COVERED) / TOTAL ))
               else
                 PCT=0
               fi
             else
-              echo "⚠️ Aucun rapport de coverage trouvé sous $(pwd)/coverage/"
+              echo "⚠️ Aucun rapport coverage trouvé sous $(pwd)/coverage/"
               PCT=0
             fi
           fi
+
           echo "pct=$PCT" >> "$GITHUB_OUTPUT"
           echo "Frontend coverage: $PCT%"
 
