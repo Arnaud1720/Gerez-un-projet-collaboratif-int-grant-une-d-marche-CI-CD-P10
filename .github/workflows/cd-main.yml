@@ -21,11 +21,12 @@ env:
 
 jobs:
   quality-gate:
-    name: Etape 1-3 • Récupération + vérif coverage + upload rapports
+    name: Étape 1-3 • Tests + coverage + upload rapports
     runs-on: ubuntu-latest
     outputs:
       backend_coverage: ${{ steps.outs.outputs.backend_coverage }}
       frontend_coverage: ${{ steps.outs.outputs.frontend_coverage }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -50,8 +51,8 @@ jobs:
           set -euo pipefail
           XML="target/site/jacoco/jacoco.xml"
           if [[ -f "$XML" ]]; then
-            MISSED=$(grep -o 'type="LINE"[^>]*missed="[0-9]*"' "$XML" | grep -o '[0-9]*' | paste -sd+ - | bc)
-            COVERED=$(grep -o 'type="LINE"[^>]*covered="[0-9]*"' "$XML" | grep -o '[0-9]*' | paste -sd+ - | bc)
+            MISSED=$(grep -o 'missed="[0-9]*"' "$XML" | grep -o '[0-9]*' | paste -sd+ - | bc)
+            COVERED=$(grep -o 'covered="[0-9]*"' "$XML" | grep -o '[0-9]*' | paste -sd+ - | bc)
             TOTAL=$(( MISSED + COVERED ))
             PCT=$(( TOTAL > 0 ? (100 * COVERED) / TOTAL : 0 ))
           else
@@ -95,6 +96,28 @@ jobs:
         working-directory: front
         run: npm run test -- --watch=false --browsers=ChromeHeadless --code-coverage
 
+      # === Debug pour voir où est le coverage ===
+      - name: Debug coverage (ls + aperçus)
+        working-directory: front
+        shell: bash
+        run: |
+          set -e
+          echo "PWD=$(pwd)"
+          echo "--- tree coverage ---"
+          find coverage -maxdepth 3 -type f -print || true
+          echo "--- Aperçu coverage-summary.json ---"
+          SUMMARY=$(find coverage -type f -name "coverage-summary.json" -print -quit || true)
+          if [[ -n "$SUMMARY" ]]; then
+            head -c 1000 "$SUMMARY" || true
+            echo "--- fin summary ---"
+          fi
+          echo "--- Aperçu lcov.info ---"
+          LCOV=$(find coverage -type f -name "lcov.info" -print -quit || true)
+          if [[ -n "$LCOV" ]]; then
+            head -n 20 "$LCOV" || true
+            echo "--- fin lcov ---"
+          fi
+
       - name: Calcul coverage frontend (%)
         id: cov-front
         working-directory: front
@@ -103,12 +126,19 @@ jobs:
           set -euo pipefail
           JSON=$(find coverage -type f -name "coverage-summary.json" -print -quit || true)
           if [[ -n "$JSON" ]]; then
-            echo "Fichier coverage-summary.json trouvé: $JSON"
-            PCT=$(node -e 'const s=require(process.argv[1]); const v=(s.total?.lines?.pct ?? s.total?.statements?.pct ?? 0); console.log(Math.floor(v));' "$JSON")
+            echo "coverage-summary.json trouvé: $JSON"
+            PCT=$(node -e '
+              try {
+                const s=require(process.argv[1]);
+                const v=(s.total?.lines?.pct ?? s.total?.statements?.pct ?? 0);
+                const n=Number.parseFloat(v);
+                console.log(Number.isFinite(n)?Math.floor(n):0);
+              } catch(e){console.log(0);}
+            ' "$JSON")
           else
             LCOV=$(find coverage -type f -name "lcov.info" -print -quit || true)
             if [[ -n "$LCOV" ]]; then
-              echo "Fichier lcov.info trouvé: $LCOV"
+              echo "lcov.info trouvé: $LCOV"
               LH=$(grep -o '^LH:[0-9]\+' "$LCOV" | awk -F: '{s+=$2} END{print s+0}')
               LF=$(grep -o '^LF:[0-9]\+' "$LCOV" | awk -F: '{s+=$2} END{print s+0}')
               if [[ "${LF:-0}" -gt 0 ]]; then
@@ -117,7 +147,7 @@ jobs:
                 PCT=0
               fi
             else
-              echo "Aucun rapport de coverage trouvé dans $(pwd)/coverage/"
+              echo "⚠️ Aucun rapport de coverage trouvé sous $(pwd)/coverage/"
               PCT=0
             fi
           fi
@@ -143,8 +173,9 @@ jobs:
           echo "backend_coverage=${{ steps.cov-back.outputs.pct }}" >> "$GITHUB_OUTPUT"
           echo "frontend_coverage=${{ steps.cov-front.outputs.pct }}" >> "$GITHUB_OUTPUT"
 
+  # === Étape SonarCloud ===
   sonarcloud:
-    name: Etape 4 • SonarCloud Analysis
+    name: Étape 4 • Analyse SonarCloud
     runs-on: ubuntu-latest
     needs: quality-gate
     steps:
@@ -178,82 +209,3 @@ jobs:
             -Dsonar.test.inclusions=**/*.spec.ts \
             -Dsonar.javascript.lcov.reportPaths=../front/coverage/**/lcov.info \
             -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml
-
-  build:
-    name: Etapes 5-7 • Build backend + frontend + artefacts
-    runs-on: ubuntu-latest
-    needs: sonarcloud
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      # Build backend
-      - name: Setup Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: ${{ env.JAVA_VERSION }}
-          cache: maven
-
-      - name: Build backend (jar)
-        working-directory: back
-        run: mvn -B -DskipTests package
-
-      - name: Upload JAR backend
-        uses: actions/upload-artifact@v4
-        with:
-          name: backend-jar
-          path: back/target/*.jar
-
-      # Build frontend
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-          cache-dependency-path: front/package-lock.json
-
-      - name: Install deps front
-        working-directory: front
-        run: npm ci
-
-      - name: Build frontend (Angular)
-        working-directory: front
-        run: npm run build -- --configuration=production
-
-      - name: Upload dist frontend
-        uses: actions/upload-artifact@v4
-        with:
-          name: frontend-dist
-          path: front/dist/**
-
-  docker:
-    name: Etape 8 • Build et push DockerHub
-    runs-on: ubuntu-latest
-    needs: build
-    if: github.ref == 'refs/heads/main'
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Login DockerHub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Build and push backend image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: back/Dockerfile
-          push: true
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/p10-back:latest
-
-      - name: Build and push frontend image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: front/Dockerfile
-          push: true
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/p10-front:latest
