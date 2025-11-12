@@ -81,32 +81,41 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
-          cache-dependency-path: repo-front/front/package-lock.json
+          cache-dependency-path: /front/package-lock.json
 
       - name: Install deps front
-        working-directory: repo-front/front
+        working-directory: /front
         run: npm ci
 
       - name: Tests front avec coverage
-        working-directory: repo-front/front
+        working-directory: /front
         run: npm run test -- --watch=false --browsers=ChromeHeadless --code-coverage
 
       - name: Calcul coverage frontend (%)
         id: cov-front
-        working-directory: repo-front/front
+        working-directory: /front
         shell: bash
         run: |
+          set -euo pipefail
+          # 1) Essayer coverage-summary.json (Istanbul/Jest/Karma)
           JSON=$(find coverage -type f -name "coverage-summary.json" -print -quit || true)
           if [[ -n "$JSON" ]]; then
-            echo "Fichier coverage trouvé: $JSON"
-            PCT=$(node -e "console.log(Math.floor(require(process.argv[1]).total.lines.pct))" "$JSON")
+            echo "Fichier coverage-summary.json trouvé: $JSON"
+            PCT=$(node -e 'const s=require(process.argv[1]); const v=(s.total?.lines?.pct ?? s.total?.statements?.pct ?? 0); console.log(Math.floor(v));' "$JSON")
           else
+            # 2) Retombée sur lcov.info (Angular --code-coverage)
             LCOV=$(find coverage -type f -name "lcov.info" -print -quit || true)
             if [[ -n "$LCOV" ]]; then
-              echo "Fichier lcov trouvé: $LCOV"
-              PCT=$(awk 'BEGIN{lh=0;lf=0} /^LH:/{sub(\"LH:\",\"\",$1);lh+=$1} /^LF:/{sub(\"LF:\",\"\",$1);lf+=$1} END{if(lf>0) printf(\"%d\",(lh*100)/lf); else print 0}' "$LCOV")
+              echo "Fichier lcov.info trouvé: $LCOV"
+              LH=$(grep -o '^LH:[0-9]\+' "$LCOV" | awk -F: '{s+=$2} END{print s+0}')
+              LF=$(grep -o '^LF:[0-9]\+' "$LCOV" | awk -F: '{s+=$2} END{print s+0}')
+              if [[ "${LF:-0}" -gt 0 ]]; then
+                PCT=$(( (100 * LH) / LF ))
+              else
+                PCT=0
+              fi
             else
-              echo "️ Aucun rapport coverage trouvé sous $(pwd)/coverage/"
+              echo "Aucun rapport de coverage trouvé dans $(pwd)/coverage/"
               PCT=0
             fi
           fi
@@ -124,7 +133,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: frontend-coverage
-          path: repo-front/front/coverage/**
+          path: /front/coverage/**
 
       - name: Expose outputs
         id: outs
