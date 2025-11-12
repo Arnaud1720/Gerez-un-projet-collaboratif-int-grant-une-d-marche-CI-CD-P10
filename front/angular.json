@@ -69,7 +69,7 @@
         "serve": {
           "builder": "@angular-devkit/build-angular:dev-server",
           "options": {
-            "browserTarget": "project-name:build",
+            "browserTarget": "bobapp:build",
             "proxyConfig": "src/proxy.config.json"
           },
           "configurations": {
@@ -109,5 +109,8 @@
         }
       }
     }
+  },
+  "cli": {
+    "analytics": "e9c7466e-7763-453c-87f7-42b0cc01a50e"
   }
 }
